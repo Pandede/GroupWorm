@@ -7,4 +7,4 @@ Web crawler for groups on Facebook
 3. Type ```python main.py```
 
 ## Progress
-Tons of bug are waited to be solved between the webdriver and PyQt5. For instance, When "Start" is pressed, it does not make a right action.
+Tons of bug are waited to be solved between the webdriver and PyQt5. For instance, When "Start" is pressed, it has no response if the browser is closed.
