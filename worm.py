@@ -5,23 +5,25 @@ Created on Fri Apr 10 17:00:47 2020
 @author: Chan Chak Tong
 """
 
+from PyQt5.QtCore import QThread, pyqtSignal
 from selenium import webdriver
+from selenium.webdriver.common.keys import Keys
 from datetime import datetime
 from itertools import compress
-from getpass import getpass
 import time
 import re
 
 class Worm:
-    def __init__(self):
-        self.username = input('Username of FACEBOOK: ')
-        self.password = getpass('Password of FACEBOOK: ')
-    
+    def __init__(self, username, password):
+        self.username = username
+        self.password = password
+        self.seen = []
+        
     def __login(self):
         # Locate the textbox and enter the correspondings
         self.driver.find_element_by_id("email").send_keys(self.username)
         self.driver.find_element_by_id("pass").send_keys(self.password)
-        self.driver.find_element_by_id("loginbutton").click()
+        self.driver.find_element_by_id("pass").send_keys(Keys.ENTER)
         
         # Wait the respond of website
         time.sleep(1)
@@ -29,7 +31,7 @@ class Worm:
     def __scroll_down(self, times):
         # Scroll the browser about k-times
         for i in range(times):
-            self.driver.execute_script('window.scrollTo(0, %d)' % (500 * (i+1)))
+            self.driver.execute_script('window.scrollTo(0, document.body.scrollHeight)')
             time.sleep(1)
     
     def __open_feed(self, feed_id):
@@ -38,7 +40,7 @@ class Worm:
         self.driver.execute_script('window.open("%s","_blank");' % feed_link)
         self.driver.switch_to.window(self.driver.window_handles[0])
         
-    def start(self, group_link):
+    def locate(self, group_link):
         # Opens browser and go to FACEBOOK
         # Requires 'chromedriver.exe'
         profile = webdriver.ChromeOptions()
@@ -54,31 +56,45 @@ class Worm:
         self.group_link = group_link
         self.driver.get(group_link + '?sorting_setting=CHRONOLOGICAL')
     
-    def listen(self, keyword, top=10, scroll_times=6, freq=30):
-        # Keep listening the feeds and refresh after (freq) secs
-        self.seen = []      # Record the seen feed
-        print('[Start] %s' % str(datetime.today()))
-        print('------------------------------')
-        while True:
-            self.__scroll_down(scroll_times)
-            message_list = self.__get_messages(top)
-            id_list = self.__get_feed_ids(top)
-            matched = list(map(lambda m: m.find(keyword) != -1, message_list))
-            match_id = list(compress(id_list, matched))
-            
-            print('[Refresh] %s' % str(datetime.today()))
-            print('Matched cases: ',  sum(matched))
-            print('Matched ID:', match_id)
-            print('------------------------------')
-            
-            # Open the feed if it hasn't seen before.
-            for feed_id in match_id:
-                if feed_id not in self.seen:
-                    self.seen.append(feed_id)
-                    self.__open_feed(feed_id)
-                    
-            time.sleep(freq)
-            self.driver.refresh()
+    def listen(self, keywords, top=10, scroll_times=6):
+        records = []
+        
+        # Refresh the website
+        self.driver.refresh()
+        
+        # Scroll the window
+        self.__scroll_down(scroll_times)
+        
+        # Get all messages and feed ID on whole page
+        message_list = self.__get_messages(top)
+        id_list = self.__get_feed_ids(top)
+        
+        # Get the messages and feed ID which contains keywords
+        matched = [self.__match(m, keywords) for m in message_list]
+        match_id = list(compress(id_list, matched))
+        
+        # Write down the time
+        record_time = str(datetime.today())
+        
+        # Add the records if it hasn't been seen yet
+        for feed_id in match_id:
+            if feed_id not in self.seen:
+                feed_link = self.group_link + 'permalink/' + feed_id
+                self.seen.append(feed_id)
+                records.append([record_time, feed_id, feed_link])
+        
+        # Compose the status dictionary
+        status = {
+            'total_cases': len(message_list),
+            'matched_cases': len(match_id)
+            }
+        
+        return status, records
+    
+    def __match(self, message, keywords):
+        # The message is valid if it contains one of keywords.
+        validity = [message.find(k) != -1 for k in keywords]
+        return sum(validity) > 0
     
     def __get_feed_ids(self, top):
         # Capture the ID of feed
@@ -106,7 +122,52 @@ class Worm:
                 message = '\n'.join(map(lambda p: p.text, p_list))
                 message_list.append(message)
         return message_list
-
+    
     def stop(self):
-        # Shut down the driver
-        self.driver.quit()
+        # Close the browser
+        self.driver.close()
+        
+class WormThread(Worm, QThread):
+    '''
+    This class implements the class "Worm" as a thread (QThread)
+    '''
+    record_signal = pyqtSignal(list)
+    status_signal = pyqtSignal(dict)
+    
+    def __init__(self, username, password, parent=None):
+        Worm.__init__(self, username, password)
+        QThread.__init__(self, parent)
+        
+        # Toggle on the thread
+        self.is_listening = True
+    
+    def __del__(self):
+        self.terminal()
+    
+    def terminal(self):
+        Worm.stop(self)
+        QThread.quit(self)
+        
+        # Stop the thread
+        self.is_listening = False
+    
+    def locate(self, group_link):
+        # Override the function "locate" in class "Worm"
+        self.group_link = group_link
+        
+    def listen(self, keywords, top=10, scroll_times=6, freq=60):
+        # Override the function "listen" in class "Worm"
+        self.keywords = keywords
+        self.top = top
+        self.scroll_times = scroll_times
+        self.freq = freq
+        
+        self.start()
+        
+    def run(self):
+        super().locate(self.group_link)
+        while self.is_listening:
+            status, records = super().listen(self.keywords, self.top, self.scroll_times)
+            self.record_signal.emit(records)
+            self.status_signal.emit(status)
+            self.sleep(self.freq)
